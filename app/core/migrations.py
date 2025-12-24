@@ -28,7 +28,13 @@ def applied_versions(conn) -> set[str]:
 def run_migrations():
     if not MIGRATIONS_DIR.exists():
         return
-    files = sorted(MIGRATIONS_DIR.glob("V*__*.sql"), key=lambda p: p.name)
+    def migration_key(path: Path) -> int:
+        match = re.match(r"V(\d+)__.*\.sql", path.name)
+        if not match:
+            return 0
+        return int(match.group(1))
+
+    files = sorted(MIGRATIONS_DIR.glob("V*__*.sql"), key=migration_key)
     with engine.begin() as conn:
         ensure_migrations_table(conn)
         applied = applied_versions(conn)
