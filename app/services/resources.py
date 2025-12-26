@@ -169,8 +169,15 @@ def get_resource_by_slug(db: Session, slug: str) -> ResourceEntry | None:
     return db.query(ResourceEntry).filter(ResourceEntry.slug == slug, ResourceEntry.status == "PUBLISHED").first()
 
 
+def _payload_value(payload: dict, snake: str, camel: str):
+    return payload.get(snake) or payload.get(camel)
+
+
 def create_resource(db: Session, payload: dict, author_id: str) -> ResourceEntry:
-    category = db.query(ResourceCategory).filter(ResourceCategory.code == payload["category_code"]).first()
+    category_code = _payload_value(payload, "category_code", "categoryCode")
+    if not category_code:
+        raise BadRequestError("Categoria selectată nu există.")
+    category = db.query(ResourceCategory).filter(ResourceCategory.code == category_code).first()
     if not category:
         raise BadRequestError("Categoria selectată nu există.")
     title = (payload.get("title") or "").strip()
@@ -187,7 +194,7 @@ def create_resource(db: Session, payload: dict, author_id: str) -> ResourceEntry
         title=title,
         slug=resolve_resource_slug(db, title),
         summary=summary,
-        avatar_media_id=payload.get("avatar_asset_id"),
+        avatar_media_id=_payload_value(payload, "avatar_asset_id", "avatarAssetId"),
         content=validate_blocks(payload.get("blocks")),
         tags=clean_tags(payload.get("tags")),
         status=status,
@@ -204,7 +211,10 @@ def create_resource(db: Session, payload: dict, author_id: str) -> ResourceEntry
 def update_resource(db: Session, entry: ResourceEntry, payload: dict, actor_id: str, can_manage_others: bool):
     if not can_manage_others and str(entry.author_id) != actor_id:
         raise NotFoundError("Resursa nu a fost găsită.")
-    category = db.query(ResourceCategory).filter(ResourceCategory.code == payload["category_code"]).first()
+    category_code = _payload_value(payload, "category_code", "categoryCode")
+    if not category_code:
+        raise BadRequestError("Categoria selectată nu există.")
+    category = db.query(ResourceCategory).filter(ResourceCategory.code == category_code).first()
     if not category:
         raise BadRequestError("Categoria selectată nu există.")
     title = (payload.get("title") or "").strip()
@@ -216,7 +226,7 @@ def update_resource(db: Session, entry: ResourceEntry, payload: dict, actor_id: 
     entry.category_code = category.code
     entry.title = title
     entry.summary = summary
-    entry.avatar_media_id = payload.get("avatar_asset_id")
+    entry.avatar_media_id = _payload_value(payload, "avatar_asset_id", "avatarAssetId")
     entry.content = validate_blocks(payload.get("blocks"))
     entry.tags = clean_tags(payload.get("tags"))
     entry.status = status

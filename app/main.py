@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import os
+import time
+from logging.handlers import TimedRotatingFileHandler
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -27,6 +30,22 @@ from app.services.metrics import capture_metrics
 from app.ws.metrics import metrics_socket_manager
 from app.services.role_groups import ensure_all_role_groups_exist
 
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+log_dir = os.getenv("LOG_DIR", "storage/logs")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "app.log")
+formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+file_handler = TimedRotatingFileHandler(
+    log_file,
+    when="D",
+    interval=1,
+    backupCount=6,
+)
+file_handler.setFormatter(formatter)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logging.basicConfig(level=log_level, handlers=[stream_handler, file_handler])
+
 app = FastAPI(title="FizicaMD API")
 logger = logging.getLogger("fizicamd")
 
@@ -52,6 +71,21 @@ app.include_router(public_router, prefix="/api")
 app.include_router(admin_groups_router, prefix="/api")
 app.include_router(teacher_groups_router, prefix="/api")
 app.include_router(student_groups_router, prefix="/api")
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "%s %s %d %.2fms",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 
 
 @app.exception_handler(NotFoundError)
@@ -92,10 +126,13 @@ def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def startup_event():
+    logger.info("starting up")
     run_migrations()
+    logger.info("migrations applied")
     db = SessionLocal()
     try:
         ensure_all_role_groups_exist(db)
+        logger.info("role groups ensured")
     finally:
         db.close()
     asyncio.create_task(metrics_loop())
@@ -103,23 +140,26 @@ async def startup_event():
 
 async def metrics_loop():
     while True:
-        db = SessionLocal()
         try:
-            sample = capture_metrics(db)
-            payload = {
-                "capturedAt": sample.captured_at.isoformat(),
-                "heapUsedBytes": sample.heap_used_bytes,
-                "heapMaxBytes": sample.heap_max_bytes,
-                "systemMemoryTotalBytes": sample.system_memory_total_bytes,
-                "systemMemoryUsedBytes": sample.system_memory_used_bytes,
-                "diskTotalBytes": sample.disk_total_bytes,
-                "diskUsedBytes": sample.disk_used_bytes,
-                "processCpuLoad": sample.process_cpu_load,
-                "systemCpuLoad": sample.system_cpu_load,
-            }
-            await metrics_socket_manager.broadcast(payload)
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                sample = capture_metrics(db)
+                payload = {
+                    "capturedAt": sample.captured_at.isoformat(),
+                    "heapUsedBytes": sample.heap_used_bytes,
+                    "heapMaxBytes": sample.heap_max_bytes,
+                    "systemMemoryTotalBytes": sample.system_memory_total_bytes,
+                    "systemMemoryUsedBytes": sample.system_memory_used_bytes,
+                    "diskTotalBytes": sample.disk_total_bytes,
+                    "diskUsedBytes": sample.disk_used_bytes,
+                    "processCpuLoad": sample.process_cpu_load,
+                    "systemCpuLoad": sample.system_cpu_load,
+                }
+                await metrics_socket_manager.broadcast(payload)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("metrics loop error")
         await asyncio.sleep(settings.metrics_sample_interval)
 
 
